@@ -38,6 +38,9 @@ class ConfigError(Exception):
 
 @dataclass
 class Credentials:
+    """Where clawguard gets its access. Built from the environment, never from argv,
+    so keys do not end up in shell history or `ps` output."""
+
     api_key: Optional[str] = None
     agent_id: Optional[str] = None
     token: Optional[str] = None  # a ready JWT, e.g. from `1claw login` (ONECLAW_TOKEN)
@@ -61,6 +64,7 @@ class Credentials:
         )
 
     def check(self) -> None:
+        """Fail early with a readable message, before any request goes out."""
         if not self.api_key and not self.token:
             raise ConfigError(
                 "no 1Claw credentials: set ONECLAW_API_KEY (a 1ck_ personal key or an ocv_ agent key), "
@@ -71,6 +75,9 @@ class Credentials:
 
 @dataclass
 class Client:
+    """A thin client: one JSON request per call, a cached short-lived token, and a
+    request counter. 1Claw plans meter API calls, so the count is worth showing."""
+
     creds: Credentials
     timeout: float = 20.0
     calls: int = 0  # API requests made, so the CLI can report quota use
@@ -80,6 +87,7 @@ class Client:
 
     # ---------- transport ----------
     def _send(self, method: str, path: str, body: Any = None, token: Optional[str] = None) -> tuple[int, Any]:
+        """One HTTP request. Returns (status, parsed JSON or None); raises only on network failure."""
         url = self.creds.api_url + "/v1/" + path.lstrip("/")
         data = None if body is None else json.dumps(body).encode()
         headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
@@ -109,6 +117,7 @@ class Client:
 
     @staticmethod
     def _problem(status: int, payload: Any, what: str) -> OneClawError:
+        # the API answers errors as RFC 7807 problem details; prefer its wording over ours
         detail = ""
         if isinstance(payload, dict):
             detail = payload.get("detail") or payload.get("title") or payload.get("error") or ""
@@ -126,6 +135,11 @@ class Client:
 
     # ---------- auth ----------
     def token(self, force: bool = False) -> str:
+        """Bearer token for API calls, exchanged from the API key and reused until close to expiry.
+
+        Agent keys (ocv_) also tell us which vaults the agent is bound to; we keep that
+        so an agent can scan without being told a vault id.
+        """
         if self.creds.token and not self.creds.api_key:
             return self.creds.token
         if not force and self._token and self._token_expires > time.time() + 30:
@@ -146,6 +160,8 @@ class Client:
         return self._token
 
     def _call(self, method: str, path: str, what: str, body: Any = None) -> Any:
+        """An authenticated call with the two retries worth doing: one after a network
+        blip, and one with a fresh token after a 401 (policy changes revoke agent tokens)."""
         status, payload = 0, None
         for attempt in range(2):
             try:
@@ -190,8 +206,10 @@ class Client:
 
 
 def q(segment: str) -> str:
+    """Quote one URL path segment, slashes included."""
     return urllib.parse.quote(segment, safe="")
 
 
 def qpath(path: str) -> str:
+    """Quote a secret path segment by segment, keeping its slashes as separators."""
     return "/".join(q(p) for p in path.strip("/").split("/"))

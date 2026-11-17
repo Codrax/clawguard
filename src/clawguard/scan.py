@@ -48,7 +48,12 @@ class Finding:
 
 # ---------- needles ----------
 def variants(value: bytes) -> dict[str, bytes]:
-    """The value as written, plus the encodings it commonly hides in."""
+    """The value as written, plus the encodings it commonly hides in.
+
+    base64 shows up in Kubernetes secrets, basic-auth headers and CI config;
+    URL encoding in connection strings and query parameters. Padding is stripped
+    because the value may sit inside a longer encoded string.
+    """
     out = {"raw": value}
     b64 = base64.b64encode(value)
     out["base64"] = b64.rstrip(b"=") if len(value) % 3 else b64
@@ -84,6 +89,7 @@ def build_needles(secrets: Iterable[tuple[str, str, str, str]], min_length: int 
                   encodings: bool = True) -> tuple[list[Needle], int]:
     """secrets: (vault, path, type, value). Returns (needles, number of values too short to search)."""
     needles, short = [], 0
+    # very short values (PINs, "true", port numbers) would match all over a codebase
     for vault, path, typ, value in secrets:
         parts = [(path, value)]
         if typ == "env":
@@ -107,6 +113,11 @@ def is_binary(data: bytes) -> bool:
 
 def scan_bytes(data: bytes, needles: list[Needle], name: str, source: str = "worktree",
                commit: Optional[str] = None) -> list[Finding]:
+    """Every place in `data` where a needle occurs, as findings with 1-based line numbers.
+
+    A plain bytes.find per needle is fast enough here: a vault holds tens of secrets,
+    not thousands, and find() runs in C.
+    """
     found = []
     seen = set()
     for n in needles:
@@ -139,6 +150,7 @@ def load_ignore(root: str) -> list[str]:
 
 
 def ignored(rel: str, patterns: list[str]) -> bool:
+    """gitignore-ish matching: a glob against the path or its basename, or a folder prefix."""
     rel = rel.replace(os.sep, "/")
     for p in patterns:
         p = p.rstrip("/")
@@ -151,6 +163,7 @@ def ignored(rel: str, patterns: list[str]) -> bool:
 
 # ---------- git ----------
 def git(root: str, *args: str, input: Optional[bytes] = None) -> Optional[bytes]:
+    """Run git in `root`. Returns stdout, or None if git is missing or the command failed."""
     try:
         r = subprocess.run(["git", "-C", root, *args], input=input, capture_output=True)
     except FileNotFoundError:
@@ -350,6 +363,7 @@ def scan_history(root: str, needles: list[Needle], max_bytes: int = DEFAULT_MAX_
 
 
 def first_commit_with(root: str, blob: str) -> Optional[str]:
+    """Short hash of the oldest commit that contains this blob, i.e. where the leak started."""
     out = git(root, "log", "--all", "--reverse", "--format=%h", "--find-object=" + blob)
     lines = (out or b"").decode().split()
     return lines[0] if lines else None

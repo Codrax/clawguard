@@ -39,6 +39,7 @@ def parse_time(s: Optional[str]) -> Optional[datetime]:
 
 
 def classify(meta: dict, vault: str, now: datetime, max_age_days: int, expiring_days: int) -> AuditRow:
+    """Grade one secret. Checks run worst first, so the first one that applies wins."""
     created = parse_time(meta.get("created_at"))
     expires = parse_time(meta.get("expires_at"))
     age = (now - created).days if created else None

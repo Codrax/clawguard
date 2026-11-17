@@ -35,12 +35,14 @@ def out_stream(path: Optional[str]):
 
 
 def make_client(args) -> Client:
+    """Credentials from the environment (or --api-key-file), checked before any request."""
     creds = Credentials.from_env(api_key_file=args.api_key_file, api_url=args.api_url)
     creds.check()
     return Client(creds)
 
 
 def wanted_vaults(args) -> list[str]:
+    """Vault ids from --vault, else from ONECLAW_VAULT_ID (comma separated). May be empty."""
     vs = list(args.vault or [])
     if not vs and os.environ.get("ONECLAW_VAULT_ID"):
         vs = [v.strip() for v in os.environ["ONECLAW_VAULT_ID"].split(",") if v.strip()]
@@ -49,6 +51,7 @@ def wanted_vaults(args) -> list[str]:
 
 # ---------- scan ----------
 def cmd_scan(args) -> int:
+    """Read the vault, turn values into needles, search, report. Exit 1 on any finding."""
     client = make_client(args)
     read = read_secrets(client, wanted_vaults(args), args.prefix)
     note = f", {read.unreadable} not readable" if read.unreadable else ""
@@ -81,6 +84,7 @@ def cmd_scan(args) -> int:
 
 # ---------- audit ----------
 def cmd_audit(args) -> int:
+    """List secret metadata and grade it. Only listing calls, so a list-only policy is enough."""
     client = make_client(args)
     vaults = client.resolve_vaults(wanted_vaults(args))
     data = [(vault_label(v), client.list_secrets(v["id"], args.prefix)) for v in vaults]
@@ -177,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    """Entry point. Turns the expected failures into one-line messages and exit codes."""
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

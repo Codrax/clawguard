@@ -15,6 +15,7 @@ RULE_ID = "CLAWGUARD001"
 
 
 def use_color(stream: TextIO) -> bool:
+    """Colour only for a real terminal, and never when NO_COLOR is set (no-color.org)."""
     return stream.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
 
 
@@ -34,6 +35,7 @@ class Style:
 
 # ---------- scan ----------
 def where(f: Finding) -> str:
+    """file:line, plus where the content came from when it is not the working tree."""
     loc = f"{f.file}:{f.line}"
     if f.source == "history":
         loc += f" @ {f.commit or '?'}"
@@ -77,6 +79,7 @@ def scan_sarif(findings: list[Finding], out: TextIO = sys.stdout) -> None:
             "message": {"text": msg + ". Rotate the secret in 1Claw."},
             "locations": [{"physicalLocation": {"artifactLocation": {"uri": f.file},
                                                 "region": {"startLine": f.line}}}],
+            # lets code scanning keep one alert per secret and file across runs
             "partialFingerprints": {"clawguard/v1": f"{f.secret}:{f.file}:{f.source}"},
         })
     doc = {
