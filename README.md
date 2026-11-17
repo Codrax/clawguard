@@ -49,7 +49,7 @@ STALE     stripe/secret-key    v1  current version written 211 days ago (limit 9
 ## Install
 
 ```bash
-pip install git+https://github.com/<you>/clawguard
+pip install git+https://github.com/Codrax/clawguard
 ```
 
 Or from a clone:
@@ -165,7 +165,7 @@ tests/fixtures/
 ```yaml
 # .pre-commit-config.yaml
 repos:
-  - repo: https://github.com/<you>/clawguard
+  - repo: https://github.com/Codrax/clawguard
     rev: v0.1.0
     hooks:
       - id: clawguard
@@ -179,7 +179,7 @@ The hook runs `clawguard scan --staged` and needs `ONECLAW_API_KEY` in your envi
 - uses: actions/checkout@v4
   with:
     fetch-depth: 0            # needed for history
-- uses: <you>/clawguard@v0.1.0
+- uses: Codrax/clawguard@v0.1.0
   with:
     api-key: ${{ secrets.ONECLAW_API_KEY }}
     vault: ${{ vars.ONECLAW_VAULT_ID }}

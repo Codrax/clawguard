@@ -10,6 +10,7 @@ from typing import Optional
 from . import __version__, output
 from .audit import STATUSES, audit
 from .client import Client, ConfigError, Credentials, OneClawError
+from .vault import read_secrets, vault_label
 from .scan import (DEFAULT_MAX_BYTES, DEFAULT_MIN_LENGTH, Stats, build_needles, scan_history, scan_staged,
                    scan_worktree)
 
@@ -43,41 +44,15 @@ def wanted_vaults(args) -> list[str]:
     return vs
 
 
-def vault_label(v: dict) -> str:
-    return v.get("name") or v["id"]
-
-
 # ---------- scan ----------
-def fetch_values(client: Client, args) -> list[tuple[str, str, str, str]]:
-    secrets = []
-    vaults = client.resolve_vaults(wanted_vaults(args))
-    skipped = 0
-    for v in vaults:
-        for meta in client.list_secrets(v["id"], args.prefix):
-            if meta.get("is_disabled"):
-                continue
-            try:
-                s = client.get_secret(v["id"], meta["path"])
-            except OneClawError as e:
-                if e.status in (403, 404):  # listed but not readable by this key
-                    skipped += 1
-                    continue
-                raise
-            if s.get("cmek_encrypted") or not isinstance(s.get("value"), str):
-                skipped += 1
-                continue
-            secrets.append((vault_label(v), meta["path"], s.get("type") or meta.get("type") or "", s["value"]))
-    note = f", {skipped} not readable" if skipped else ""
-    log(args, f"clawguard: read {len(secrets)} secret(s) from {len(vaults)} vault(s){note} "
-              f"in {client.calls} API call(s)")
-    return secrets
-
-
 def cmd_scan(args) -> int:
     client = make_client(args)
-    values = fetch_values(client, args)
-    needles, short = build_needles(values, args.min_length, encodings=not args.no_encodings)
-    values.clear()
+    read = read_secrets(client, wanted_vaults(args), args.prefix)
+    note = f", {read.unreadable} not readable" if read.unreadable else ""
+    log(args, f"clawguard: read {len(read.secrets)} secret(s) from {read.vaults} vault(s){note} "
+              f"in {client.calls} API call(s)")
+    needles, short = build_needles(read.secrets, args.min_length, encodings=not args.no_encodings)
+    read.secrets.clear()  # from here on, values only exist inside the needles
     if short:
         log(args, f"clawguard: {short} value(s) shorter than {args.min_length} characters not searched")
     if not needles:
