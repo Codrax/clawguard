@@ -94,8 +94,10 @@ class Client:
                 raw = resp.read()
                 status = resp.status
         except urllib.error.HTTPError as e:
-            raw = e.read()
-            status = e.code
+            # error responses carry an open body too; close it or every 4xx leaks a socket
+            with e:
+                raw = e.read()
+                status = e.code
         except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
             reason = getattr(e, "reason", e)
             raise OneClawError(f"cannot reach {self.creds.api_url}: {reason}", 0) from e
