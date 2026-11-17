@@ -10,8 +10,9 @@ import fnmatch
 import os
 import subprocess
 import urllib.parse
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import Iterable, Iterator, Optional
+from typing import Optional
 
 IGNORE_FILE = ".clawguardignore"
 INLINE_ALLOW = b"clawguard:allow"

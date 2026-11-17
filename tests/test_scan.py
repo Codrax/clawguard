@@ -5,8 +5,17 @@ import tempfile
 import unittest
 import urllib.parse
 
-from clawguard.scan import (Stats, build_needles, env_pairs, ignored, scan_bytes, scan_history, scan_staged,
-                            scan_worktree, variants)
+from clawguard.scan import (
+    Stats,
+    build_needles,
+    env_pairs,
+    ignored,
+    scan_bytes,
+    scan_history,
+    scan_staged,
+    scan_worktree,
+    variants,
+)
 
 SECRET = "sk_test_51HxYzAbCdEfGhIjKlMn"
 SECRETS = [("app", "stripe/secret", "api_key", SECRET)]

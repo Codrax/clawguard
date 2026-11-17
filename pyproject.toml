@@ -30,3 +30,17 @@ version = { attr = "clawguard.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+# Optional[...] stays: it is the spelling that works at runtime on 3.9 too
+ignore = ["E701", "E702", "UP007", "UP045"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["clawguard"]
+known-local-folder = ["fake_api"]

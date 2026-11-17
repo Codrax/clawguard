@@ -10,9 +10,8 @@ from typing import Optional
 from . import __version__, output
 from .audit import STATUSES, audit
 from .client import Client, ConfigError, Credentials, OneClawError
+from .scan import DEFAULT_MAX_BYTES, DEFAULT_MIN_LENGTH, Stats, build_needles, scan_history, scan_staged, scan_worktree
 from .vault import read_secrets, vault_label
-from .scan import (DEFAULT_MAX_BYTES, DEFAULT_MIN_LENGTH, Stats, build_needles, scan_history, scan_staged,
-                   scan_worktree)
 
 EXIT_OK, EXIT_FOUND, EXIT_CONFIG, EXIT_API = 0, 1, 2, 3
 

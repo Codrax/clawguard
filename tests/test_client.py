@@ -22,7 +22,8 @@ class CredentialsTest(unittest.TestCase):
             Credentials(api_key="sk-live-123").check()
 
     def test_key_file(self):
-        import tempfile, os
+        import os
+        import tempfile
         with tempfile.NamedTemporaryFile("w", delete=False) as f:
             f.write(USER_KEY + "\n")
         try:

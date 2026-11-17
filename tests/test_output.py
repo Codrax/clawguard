@@ -4,8 +4,17 @@ import unittest
 
 from clawguard import __version__
 from clawguard.audit import AuditRow
-from clawguard.output import (RULE_ID, Style, audit_json, audit_markdown, audit_text, scan_json, scan_sarif,
-                              scan_text, where)
+from clawguard.output import (
+    RULE_ID,
+    Style,
+    audit_json,
+    audit_markdown,
+    audit_text,
+    scan_json,
+    scan_sarif,
+    scan_text,
+    where,
+)
 from clawguard.scan import Finding
 
 WORKTREE = Finding("src/app.py", 12, "stripe/secret", "app", "raw")
