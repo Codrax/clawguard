@@ -18,7 +18,10 @@ EXIT_OK, EXIT_FOUND, EXIT_CONFIG, EXIT_API = 0, 1, 2, 3
 
 
 def log(args, msg: str) -> None:
+    """Progress and summary lines go to stderr, so stdout stays clean for reports and pipes."""
     if not getattr(args, "quiet", False):
+        # flush the report first; otherwise a piped stdout can show up after the summary
+        sys.stdout.flush()
         sys.stderr.write(msg + "\n")
 
 
