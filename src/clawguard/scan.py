@@ -1,0 +1,319 @@
+"""Search files, staged changes and git history for the exact values of vault secrets.
+
+Secret values only ever live in memory, inside `Needle` objects. Nothing here prints,
+logs or writes a value; findings carry the vault path of the secret, never the secret.
+"""
+from __future__ import annotations
+
+import base64
+import fnmatch
+import os
+import subprocess
+import urllib.parse
+from dataclasses import dataclass, field
+from typing import Iterable, Iterator, Optional
+
+IGNORE_FILE = ".clawguardignore"
+INLINE_ALLOW = b"clawguard:allow"
+DEFAULT_MIN_LENGTH = 8
+DEFAULT_MAX_BYTES = 5 * 1024 * 1024
+SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", "dist", "build"}
+
+
+@dataclass(frozen=True)
+class Needle:
+    secret: str  # vault path, plus "#KEY" for one line of an env-type secret
+    vault: str
+    variant: str  # raw, base64, base64url, url
+    value: bytes = field(repr=False)
+
+
+@dataclass(frozen=True)
+class Finding:
+    file: str
+    line: int
+    secret: str
+    vault: str
+    variant: str
+    source: str = "worktree"  # worktree, staged, history
+    commit: Optional[str] = None
+
+    def to_dict(self) -> dict:
+        d = {"file": self.file, "line": self.line, "secret": self.secret, "vault": self.vault,
+             "variant": self.variant, "source": self.source}
+        if self.commit:
+            d["commit"] = self.commit
+        return d
+
+
+# ---------- needles ----------
+def variants(value: bytes) -> dict[str, bytes]:
+    """The value as written, plus the encodings it commonly hides in."""
+    out = {"raw": value}
+    b64 = base64.b64encode(value)
+    out["base64"] = b64.rstrip(b"=") if len(value) % 3 else b64
+    out["base64url"] = base64.urlsafe_b64encode(value).rstrip(b"=")
+    url = urllib.parse.quote(value.decode("utf-8", "replace"), safe="").encode()
+    if url != value:
+        out["url"] = url
+    # drop duplicates (e.g. base64url == base64 when no +/ appear)
+    seen, uniq = set(), {}
+    for k, v in out.items():
+        if v not in seen:
+            seen.add(v)
+            uniq[k] = v
+    return uniq
+
+
+def env_pairs(text: str) -> Iterator[tuple[str, str]]:
+    """KEY=value lines of a .env-style secret."""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[7:]
+        k, v = line.split("=", 1)
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            v = v[1:-1]
+        yield k.strip(), v
+
+
+def build_needles(secrets: Iterable[tuple[str, str, str, str]], min_length: int = DEFAULT_MIN_LENGTH,
+                  encodings: bool = True) -> tuple[list[Needle], int]:
+    """secrets: (vault, path, type, value). Returns (needles, number of values too short to search)."""
+    needles, short = [], 0
+    for vault, path, typ, value in secrets:
+        parts = [(path, value)]
+        if typ == "env":
+            parts = [(f"{path}#{k}", v) for k, v in env_pairs(value)] or parts
+        for name, val in parts:
+            val = val.strip()
+            if len(val) < min_length:
+                short += 1
+                continue
+            raw = val.encode()
+            forms = variants(raw) if encodings else {"raw": raw}
+            for variant, form in forms.items():
+                needles.append(Needle(name, vault, variant, form))
+    return needles, short
+
+
+# ---------- matching ----------
+def is_binary(data: bytes) -> bool:
+    return b"\0" in data[:8192]
+
+
+def scan_bytes(data: bytes, needles: list[Needle], name: str, source: str = "worktree",
+               commit: Optional[str] = None) -> list[Finding]:
+    found = []
+    seen = set()
+    for n in needles:
+        start = 0
+        while True:
+            i = data.find(n.value, start)
+            if i < 0:
+                break
+            start = i + 1
+            line_no = data.count(b"\n", 0, i) + 1
+            ls = data.rfind(b"\n", 0, i) + 1
+            le = data.find(b"\n", i)
+            if INLINE_ALLOW in data[ls:le if le >= 0 else len(data)]:
+                continue
+            key = (line_no, n.secret)
+            if key in seen:  # one finding per secret per line, whichever encoding hit first
+                continue
+            seen.add(key)
+            found.append(Finding(name, line_no, n.secret, n.vault, n.variant, source, commit))
+    return found
+
+
+# ---------- ignore rules ----------
+def load_ignore(root: str) -> list[str]:
+    path = os.path.join(root, IGNORE_FILE)
+    if not os.path.isfile(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+def ignored(rel: str, patterns: list[str]) -> bool:
+    rel = rel.replace(os.sep, "/")
+    for p in patterns:
+        p = p.rstrip("/")
+        if fnmatch.fnmatch(rel, p) or fnmatch.fnmatch(os.path.basename(rel), p):
+            return True
+        if rel.startswith(p + "/") or fnmatch.fnmatch(rel, p + "/*"):
+            return True
+    return False
+
+
+# ---------- git ----------
+def git(root: str, *args: str, input: Optional[bytes] = None) -> Optional[bytes]:
+    try:
+        r = subprocess.run(["git", "-C", root, *args], input=input, capture_output=True)
+    except FileNotFoundError:
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def in_git_repo(root: str) -> bool:
+    out = git(root, "rev-parse", "--is-inside-work-tree")
+    return out is not None and out.strip() == b"true"
+
+
+# ---------- sources ----------
+@dataclass
+class Stats:
+    files: int = 0
+    skipped_binary: int = 0
+    skipped_large: int = 0
+    skipped_ignored: int = 0
+    blobs: int = 0
+
+
+def _read(path: str, max_bytes: int, stats: Stats) -> Optional[bytes]:
+    try:
+        if os.path.getsize(path) > max_bytes:
+            stats.skipped_large += 1
+            return None
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    if is_binary(data):
+        stats.skipped_binary += 1
+        return None
+    return data
+
+
+def worktree_files(root: str, paths: list[str]) -> Iterator[str]:
+    """Relative paths to scan: git's tracked + untracked-not-ignored files, or a plain walk."""
+    if in_git_repo(root):
+        out = git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *(paths or ["."]))
+        seen = set()
+        for p in (out or b"").split(b"\0"):
+            if p and p not in seen:
+                seen.add(p)
+                rel = p.decode("utf-8", "surrogateescape")
+                if os.path.isfile(os.path.join(root, rel)):
+                    yield rel
+        return
+    for base in paths or ["."]:
+        full = os.path.join(root, base)
+        if os.path.isfile(full):
+            yield os.path.relpath(full, root)
+            continue
+        for dirpath, dirnames, filenames in os.walk(full):
+            dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
+            for fn in sorted(filenames):
+                yield os.path.relpath(os.path.join(dirpath, fn), root)
+
+
+def scan_worktree(root: str, paths: list[str], needles: list[Needle], max_bytes: int = DEFAULT_MAX_BYTES,
+                  exclude: Optional[list[str]] = None, stats: Optional[Stats] = None) -> list[Finding]:
+    stats = stats or Stats()
+    patterns = load_ignore(root) + list(exclude or [])
+    out = []
+    for rel in worktree_files(root, paths):
+        if ignored(rel, patterns):
+            stats.skipped_ignored += 1
+            continue
+        data = _read(os.path.join(root, rel), max_bytes, stats)
+        if data is None:
+            continue
+        stats.files += 1
+        out += scan_bytes(data, needles, rel.replace(os.sep, "/"))
+    return out
+
+
+def scan_staged(root: str, needles: list[Needle], max_bytes: int = DEFAULT_MAX_BYTES,
+                exclude: Optional[list[str]] = None, stats: Optional[Stats] = None) -> list[Finding]:
+    """The staged version of every added, copied, modified or renamed file (for pre-commit)."""
+    stats = stats or Stats()
+    if not in_git_repo(root):
+        raise RuntimeError("--staged needs a git repository")
+    patterns = load_ignore(root) + list(exclude or [])
+    names = git(root, "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR") or b""
+    out = []
+    for p in names.split(b"\0"):
+        if not p:
+            continue
+        rel = p.decode("utf-8", "surrogateescape")
+        if ignored(rel, patterns):
+            stats.skipped_ignored += 1
+            continue
+        data = git(root, "show", ":" + rel)
+        if data is None:
+            continue
+        if len(data) > max_bytes:
+            stats.skipped_large += 1
+            continue
+        if is_binary(data):
+            stats.skipped_binary += 1
+            continue
+        stats.files += 1
+        out += scan_bytes(data, needles, rel, "staged")
+    return out
+
+
+def scan_history(root: str, needles: list[Needle], max_bytes: int = DEFAULT_MAX_BYTES,
+                 exclude: Optional[list[str]] = None, stats: Optional[Stats] = None) -> list[Finding]:
+    """Every blob reachable from any ref. Each hit names the commit that first added that blob."""
+    stats = stats or Stats()
+    if not in_git_repo(root):
+        raise RuntimeError("--history needs a git repository")
+    patterns = load_ignore(root) + list(exclude or [])
+    listing = git(root, "rev-list", "--all", "--objects") or b""
+    paths: dict[str, str] = {}
+    for line in listing.splitlines():
+        parts = line.decode("utf-8", "surrogateescape").split(" ", 1)
+        if len(parts) == 2 and parts[1] and parts[0] not in paths:
+            paths[parts[0]] = parts[1]
+    if not paths:
+        return []
+    check = git(root, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+                input=("\n".join(paths) + "\n").encode()) or b""
+    blobs = []
+    for line in check.splitlines():
+        sha, typ, size = line.decode().split(" ")
+        if typ != "blob":
+            continue
+        if int(size) > max_bytes:
+            stats.skipped_large += 1
+            continue
+        if ignored(paths[sha], patterns):
+            stats.skipped_ignored += 1
+            continue
+        blobs.append(sha)
+    out = []
+    proc = subprocess.Popen(["git", "-C", root, "cat-file", "--batch"], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE)
+    try:
+        for sha in blobs:
+            proc.stdin.write(sha.encode() + b"\n")
+            proc.stdin.flush()
+            header = proc.stdout.readline().split()
+            size = int(header[2])
+            data = proc.stdout.read(size)
+            proc.stdout.read(1)
+            if is_binary(data):
+                stats.skipped_binary += 1
+                continue
+            stats.blobs += 1
+            hits = scan_bytes(data, needles, paths[sha], "history")
+            if hits:
+                commit = first_commit_with(root, sha)
+                out += [Finding(h.file, h.line, h.secret, h.vault, h.variant, "history", commit) for h in hits]
+    finally:
+        proc.stdin.close()
+        proc.stdout.close()
+        proc.wait()
+    return out
+
+
+def first_commit_with(root: str, blob: str) -> Optional[str]:
+    out = git(root, "log", "--all", "--reverse", "--format=%h", "--find-object=" + blob)
+    lines = (out or b"").decode().split()
+    return lines[0] if lines else None

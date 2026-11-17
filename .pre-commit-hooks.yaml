@@ -1,0 +1,8 @@
+- id: clawguard
+  name: clawguard (1Claw vault secrets)
+  description: Block commits that contain a value stored in your 1Claw vault.
+  entry: clawguard scan --staged
+  language: python
+  pass_filenames: false
+  always_run: true
+  stages: [pre-commit]

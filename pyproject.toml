@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clawguard"
+description = "Find your 1Claw vault secrets in code, staged changes and git history. Audit expiry and age."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "clawguard contributors" }]
+keywords = ["1claw", "secrets", "secret-scanning", "security", "pre-commit", "git", "vault"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = []
+dynamic = ["version"]
+
+[project.scripts]
+clawguard = "clawguard.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "clawguard.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

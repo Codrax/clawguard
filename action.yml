@@ -1,0 +1,78 @@
+name: clawguard
+description: "Find the secrets in your 1Claw vault inside your repository and its git history."
+branding:
+  icon: shield
+  color: red
+inputs:
+  api-key:
+    description: "1Claw agent (ocv_) or personal (1ck_) key. Pass it from a repository secret."
+    required: true
+  vault:
+    description: "Vault id(s), comma separated. Default: the agent's vaults, or every vault the key can list."
+    required: false
+    default: ""
+  prefix:
+    description: "Only check secrets under this vault path."
+    required: false
+    default: ""
+  history:
+    description: "Also scan git history (check out with fetch-depth 0)."
+    required: false
+    default: "false"
+  sarif:
+    description: "Path of a SARIF report to write, for github/codeql-action/upload-sarif. Empty for none."
+    required: false
+    default: ""
+  api-url:
+    description: "1Claw API base URL."
+    required: false
+    default: https://api.1claw.co
+outputs:
+  findings:
+    description: "Number of findings."
+    value: ${{ steps.scan.outputs.findings }}
+runs:
+  using: composite
+  steps:
+    - name: Install clawguard
+      shell: bash
+      run: python3 -m pip install --quiet --disable-pip-version-check "${{ github.action_path }}"
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        ONECLAW_API_KEY: ${{ inputs.api-key }}
+        ONECLAW_VAULT_ID: ${{ inputs.vault }}
+        ONECLAW_API_URL: ${{ inputs.api-url }}
+        CG_PREFIX: ${{ inputs.prefix }}
+        CG_HISTORY: ${{ inputs.history }}
+        CG_SARIF: ${{ inputs.sarif }}
+      run: |
+        args=(scan -f json -o "$RUNNER_TEMP/clawguard.json")
+        [ -n "$CG_PREFIX" ] && args+=(--prefix "$CG_PREFIX")
+        [ "$CG_HISTORY" = "true" ] && args+=(--history)
+        set +e
+        clawguard "${args[@]}"
+        code=$?
+        set -e
+        if [ "$code" -ge 2 ]; then exit "$code"; fi
+        python3 - "$RUNNER_TEMP/clawguard.json" <<'PY'
+        import json, os, sys
+        doc = json.load(open(sys.argv[1]))
+        n = len(doc["findings"])
+        with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+            out.write(f"findings={n}\n")
+        for f in doc["findings"]:
+            where = f" (git history, commit {f.get('commit')})" if f["source"] == "history" else ""
+            print(f"::error file={f['file']},line={f['line']},title=1Claw secret exposed::"
+                  f"Value of '{f['secret']}' found{where}. Rotate it in 1Claw.")
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+            s.write(f"### clawguard\n\n{n} vault secret(s) found in the repository.\n")
+        sarif = os.environ.get("CG_SARIF")
+        if sarif:  # built from the same results: no second scan, no extra API calls
+            from clawguard.output import scan_sarif
+            from clawguard.scan import Finding
+            with open(sarif, "w") as out:
+                scan_sarif([Finding(**f) for f in doc["findings"]], out)
+        PY
+        exit "$code"
