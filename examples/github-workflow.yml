@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: <you>/clawguard@v0.1.0
+      - uses: Codrax/clawguard@v0.1.0
         with:
           api-key: ${{ secrets.ONECLAW_API_KEY }}
           vault: ${{ vars.ONECLAW_VAULT_ID }}
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install git+https://github.com/<you>/clawguard@v0.1.0
+      - run: pip install git+https://github.com/Codrax/clawguard@v0.1.0
       - run: clawguard audit -f markdown --fail-on expired,expiring >> "$GITHUB_STEP_SUMMARY"
         env:
           ONECLAW_API_KEY: ${{ secrets.ONECLAW_API_KEY }}
