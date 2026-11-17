@@ -173,19 +173,44 @@ class Stats:
     blobs: int = 0
 
 
-def _read(path: str, max_bytes: int, stats: Stats) -> Optional[bytes]:
+class _Filter:
+    """The skip rules every source shares: ignore globs, size limit, binary content.
+
+    Each check bumps the matching counter in `stats`, so the CLI can say what was left out.
+    """
+
+    def __init__(self, root: str, exclude: Optional[list[str]], max_bytes: int, stats: Stats):
+        self.patterns = load_ignore(root) + list(exclude or [])
+        self.max_bytes = max_bytes
+        self.stats = stats
+
+    def skip_path(self, rel: str) -> bool:
+        if ignored(rel, self.patterns):
+            self.stats.skipped_ignored += 1
+            return True
+        return False
+
+    def skip_size(self, size: int) -> bool:
+        if size > self.max_bytes:
+            self.stats.skipped_large += 1
+            return True
+        return False
+
+    def skip_data(self, data: bytes) -> bool:
+        if self.skip_size(len(data)):
+            return True
+        if is_binary(data):
+            self.stats.skipped_binary += 1
+            return True
+        return False
+
+
+def _read_file(path: str) -> Optional[bytes]:
     try:
-        if os.path.getsize(path) > max_bytes:
-            stats.skipped_large += 1
-            return None
         with open(path, "rb") as f:
-            data = f.read()
-    except OSError:
+            return f.read()
+    except OSError:  # vanished or unreadable between listing and reading; not worth failing over
         return None
-    if is_binary(data):
-        stats.skipped_binary += 1
-        return None
-    return data
 
 
 def worktree_files(root: str, paths: list[str]) -> Iterator[str]:
@@ -197,6 +222,7 @@ def worktree_files(root: str, paths: list[str]) -> Iterator[str]:
             if p and p not in seen:
                 seen.add(p)
                 rel = p.decode("utf-8", "surrogateescape")
+                # ls-files still lists tracked files that were deleted locally
                 if os.path.isfile(os.path.join(root, rel)):
                     yield rel
         return
@@ -213,15 +239,22 @@ def worktree_files(root: str, paths: list[str]) -> Iterator[str]:
 
 def scan_worktree(root: str, paths: list[str], needles: list[Needle], max_bytes: int = DEFAULT_MAX_BYTES,
                   exclude: Optional[list[str]] = None, stats: Optional[Stats] = None) -> list[Finding]:
+    """Files on disk, as they are right now."""
     stats = stats or Stats()
-    patterns = load_ignore(root) + list(exclude or [])
+    filt = _Filter(root, exclude, max_bytes, stats)
     out = []
     for rel in worktree_files(root, paths):
-        if ignored(rel, patterns):
-            stats.skipped_ignored += 1
+        full = os.path.join(root, rel)
+        if filt.skip_path(rel):
             continue
-        data = _read(os.path.join(root, rel), max_bytes, stats)
-        if data is None:
+        try:
+            # check the size before reading, so a huge file never lands in memory
+            if filt.skip_size(os.path.getsize(full)):
+                continue
+        except OSError:
+            continue
+        data = _read_file(full)
+        if data is None or filt.skip_data(data):
             continue
         stats.files += 1
         out += scan_bytes(data, needles, rel.replace(os.sep, "/"))
@@ -230,32 +263,59 @@ def scan_worktree(root: str, paths: list[str], needles: list[Needle], max_bytes:
 
 def scan_staged(root: str, needles: list[Needle], max_bytes: int = DEFAULT_MAX_BYTES,
                 exclude: Optional[list[str]] = None, stats: Optional[Stats] = None) -> list[Finding]:
-    """The staged version of every added, copied, modified or renamed file (for pre-commit)."""
+    """The staged version of every added, copied, modified or renamed file (for pre-commit).
+
+    This reads from the index, not the disk: a file fixed on disk but not re-staged still
+    commits the old content, and that is what gets checked.
+    """
     stats = stats or Stats()
     if not in_git_repo(root):
         raise RuntimeError("--staged needs a git repository")
-    patterns = load_ignore(root) + list(exclude or [])
+    filt = _Filter(root, exclude, max_bytes, stats)
     names = git(root, "diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR") or b""
     out = []
     for p in names.split(b"\0"):
         if not p:
             continue
         rel = p.decode("utf-8", "surrogateescape")
-        if ignored(rel, patterns):
-            stats.skipped_ignored += 1
+        if filt.skip_path(rel):
             continue
-        data = git(root, "show", ":" + rel)
-        if data is None:
-            continue
-        if len(data) > max_bytes:
-            stats.skipped_large += 1
-            continue
-        if is_binary(data):
-            stats.skipped_binary += 1
+        data = git(root, "show", ":" + rel)  # ":path" is the index version
+        if data is None or filt.skip_data(data):
             continue
         stats.files += 1
         out += scan_bytes(data, needles, rel, "staged")
     return out
+
+
+def _history_blobs(root: str) -> dict[str, str]:
+    """Map of blob sha -> a path it appeared under, for every object reachable from any ref."""
+    listing = git(root, "rev-list", "--all", "--objects") or b""
+    paths: dict[str, str] = {}
+    for line in listing.splitlines():
+        parts = line.decode("utf-8", "surrogateescape").split(" ", 1)
+        # commits come without a path; trees and blobs with one. Keep the first path seen.
+        if len(parts) == 2 and parts[1] and parts[0] not in paths:
+            paths[parts[0]] = parts[1]
+    return paths
+
+
+def _cat_blobs(root: str, shas: list[str]) -> Iterator[tuple[str, bytes]]:
+    """Stream blob contents through one long-running `git cat-file --batch`."""
+    proc = subprocess.Popen(["git", "-C", root, "cat-file", "--batch"], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE)
+    try:
+        for sha in shas:
+            proc.stdin.write(sha.encode() + b"\n")
+            proc.stdin.flush()
+            header = proc.stdout.readline().split()  # "<sha> blob <size>"
+            data = proc.stdout.read(int(header[2]))
+            proc.stdout.read(1)  # trailing newline after each object
+            yield sha, data
+    finally:
+        proc.stdin.close()
+        proc.stdout.close()
+        proc.wait()
 
 
 def scan_history(root: str, needles: list[Needle], max_bytes: int = DEFAULT_MAX_BYTES,
@@ -264,52 +324,28 @@ def scan_history(root: str, needles: list[Needle], max_bytes: int = DEFAULT_MAX_
     stats = stats or Stats()
     if not in_git_repo(root):
         raise RuntimeError("--history needs a git repository")
-    patterns = load_ignore(root) + list(exclude or [])
-    listing = git(root, "rev-list", "--all", "--objects") or b""
-    paths: dict[str, str] = {}
-    for line in listing.splitlines():
-        parts = line.decode("utf-8", "surrogateescape").split(" ", 1)
-        if len(parts) == 2 and parts[1] and parts[0] not in paths:
-            paths[parts[0]] = parts[1]
+    filt = _Filter(root, exclude, max_bytes, stats)
+    paths = _history_blobs(root)
     if not paths:
         return []
+    # ask for type and size of everything in one go, so trees and big blobs are never read
     check = git(root, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)",
                 input=("\n".join(paths) + "\n").encode()) or b""
-    blobs = []
+    wanted = []
     for line in check.splitlines():
         sha, typ, size = line.decode().split(" ")
-        if typ != "blob":
-            continue
-        if int(size) > max_bytes:
-            stats.skipped_large += 1
-            continue
-        if ignored(paths[sha], patterns):
-            stats.skipped_ignored += 1
-            continue
-        blobs.append(sha)
+        if typ == "blob" and not filt.skip_size(int(size)) and not filt.skip_path(paths[sha]):
+            wanted.append(sha)
     out = []
-    proc = subprocess.Popen(["git", "-C", root, "cat-file", "--batch"], stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE)
-    try:
-        for sha in blobs:
-            proc.stdin.write(sha.encode() + b"\n")
-            proc.stdin.flush()
-            header = proc.stdout.readline().split()
-            size = int(header[2])
-            data = proc.stdout.read(size)
-            proc.stdout.read(1)
-            if is_binary(data):
-                stats.skipped_binary += 1
-                continue
-            stats.blobs += 1
-            hits = scan_bytes(data, needles, paths[sha], "history")
-            if hits:
-                commit = first_commit_with(root, sha)
-                out += [Finding(h.file, h.line, h.secret, h.vault, h.variant, "history", commit) for h in hits]
-    finally:
-        proc.stdin.close()
-        proc.stdout.close()
-        proc.wait()
+    for sha, data in _cat_blobs(root, wanted):
+        if filt.skip_data(data):
+            continue
+        stats.blobs += 1
+        hits = scan_bytes(data, needles, paths[sha], "history")
+        if hits:
+            # only look up the commit for blobs that matched; it is the slow part
+            commit = first_commit_with(root, sha)
+            out += [Finding(h.file, h.line, h.secret, h.vault, h.variant, "history", commit) for h in hits]
     return out
 
 
