@@ -15,8 +15,13 @@ RULE_ID = "CLAWGUARD001"
 
 
 def use_color(stream: TextIO) -> bool:
-    """Colour only for a real terminal, and never when NO_COLOR is set (no-color.org)."""
-    return stream.isatty() and not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb"
+    """Colour for a real terminal. NO_COLOR (no-color.org) always turns it off; FORCE_COLOR
+    turns it on where stdout is not a terminal but ANSI still renders, like CI logs and git hooks."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR", "0") not in ("", "0", "false"):
+        return True
+    return stream.isatty() and os.environ.get("TERM") != "dumb"
 
 
 class Style:

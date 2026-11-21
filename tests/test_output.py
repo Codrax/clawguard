@@ -1,6 +1,8 @@
 import io
 import json
+import os
 import unittest
+from unittest import mock
 
 from clawguard import __version__
 from clawguard.audit import AuditRow
@@ -13,6 +15,7 @@ from clawguard.output import (
     scan_json,
     scan_sarif,
     scan_text,
+    use_color,
     where,
 )
 from clawguard.scan import Finding
@@ -46,6 +49,17 @@ class StyleTest(unittest.TestCase):
 
     def test_on_wraps(self):
         self.assertEqual(Style(True).red("x"), "\033[31mx\033[0m")
+
+    def test_env_switches(self):
+        buf = io.StringIO()  # not a tty
+        with mock.patch.dict(os.environ, {"FORCE_COLOR": "1"}, clear=False):
+            os.environ.pop("NO_COLOR", None)
+            self.assertTrue(use_color(buf))
+            os.environ["NO_COLOR"] = "1"
+            self.assertFalse(use_color(buf))  # NO_COLOR wins
+        with mock.patch.dict(os.environ, {"FORCE_COLOR": "0"}, clear=False):
+            os.environ.pop("NO_COLOR", None)
+            self.assertFalse(use_color(buf))
 
 
 class ScanOutputTest(unittest.TestCase):
