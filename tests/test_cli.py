@@ -61,6 +61,21 @@ class CliTest(unittest.TestCase):
         self.assertIn("stripe/secret", out)
         self.assertNotIn(SECRET, out + err)
 
+    def test_history_does_not_repeat_live_leaks(self):
+        import subprocess
+        for cmd in (["git", "init", "-q"], ["git", "config", "user.email", "t@example.invalid"],
+                    ["git", "config", "user.name", "t"], ["git", "config", "commit.gpgsign", "false"]):
+            subprocess.run(cmd, check=True)
+        self.write("old.txt", f"old = {SECRET}\n")  # different content, so two different blobs
+        self.write("live.txt", f"live = {SECRET}\n")
+        subprocess.run(["git", "add", "."], check=True)
+        subprocess.run(["git", "commit", "-qm", "x"], check=True)
+        os.remove("old.txt")
+        subprocess.run(["git", "commit", "-qam", "remove old"], check=True)
+        code, out, _ = self.run_cli("scan", "--history", "-f", "json", "-q")
+        found = sorted((f["file"], f["source"]) for f in json.loads(out)["findings"])
+        self.assertEqual(found, [("live.txt", "worktree"), ("old.txt", "history")])
+
     def test_scan_json_and_sarif(self):
         self.write("a.txt", SECRET)
         code, out, _ = self.run_cli("scan", "-f", "json", "-q")

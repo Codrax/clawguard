@@ -69,7 +69,10 @@ def cmd_scan(args) -> int:
     else:
         findings = scan_worktree(root, args.paths, needles, args.max_bytes, args.exclude, stats)
         if args.history:
-            findings += scan_history(root, needles, args.max_bytes, args.exclude, stats)
+            # a leak that is still on disk is also in history; report it once, as the live file
+            live = {(f.file, f.line, f.secret) for f in findings}
+            findings += [f for f in scan_history(root, needles, args.max_bytes, args.exclude, stats)
+                         if (f.file, f.line, f.secret) not in live]
     needles.clear()
     extra = f", {stats.blobs} history blob(s)" if args.history else ""
     log(args, f"clawguard: scanned {stats.files} file(s){extra}")
