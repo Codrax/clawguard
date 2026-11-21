@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `--history` no longer reports a leak twice when it is still in the working tree.
+- `FORCE_COLOR` keeps colours in git hooks and CI logs; `NO_COLOR` still wins.
+- README artwork: banner, logo and screenshots of scan, audit and the pre-commit hook.
 - Close HTTP error responses instead of leaking a socket per 4xx.
 - Progress messages no longer print above a piped report.
 - Internal: shared skip rules for all scan sources, vault reading moved to `vault.py`.

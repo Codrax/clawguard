@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/banner.png" alt="clawguard: find your 1Claw vault secrets where they should not be" width="100%">
+</p>
+
 # clawguard
 
 **Find your 1Claw vault secrets where they should not be.**
@@ -10,27 +14,15 @@ actually store there (in memory only), and searches your working tree, your stag
 your whole git history for those exact values, including their base64 and URL-encoded forms.
 Every hit is a real secret in a place it shouldn't be.
 
-```console
-$ clawguard scan --history
-clawguard: read 5 secret(s) from 1 vault(s) in 7 API call(s)
-clawguard: scanned 5 file(s), 3 history blob(s)
-LEAK  docker-compose.override.yml:5  db/postgres-password
-LEAK  src/settings.py:1              prod/env#SENTRY_DSN
-LEAK  config/dev.yml:2 @ 43b5bda     github/deploy-token (base64)
-
-3 finding(s), 3 distinct secret(s). Rotate them in 1Claw, then remove them from the files and from git history.
-```
+<p align="center">
+  <img src="docs/images/scan.png" alt="clawguard scan --history finding a database password, a Slack webhook and a base64-encoded deploy token in git history" width="820">
+</p>
 
 It also checks the vault itself:
 
-```console
-$ clawguard audit
-EXPIRED   github/deploy-token  v3  expired 2 day(s) ago
-EXPIRING  partners/acme-api    v1  expires in 4 day(s)
-STALE     stripe/secret-key    v1  current version written 211 days ago (limit 90)
-
-5 secret(s): 1 expired, 1 expiring, 1 stale, 2 ok
-```
+<p align="center">
+  <img src="docs/images/audit.png" alt="clawguard audit listing one expired, one expiring and one stale secret" width="820">
+</p>
 
 `audit` uses metadata only and never reads a secret value.
 
@@ -172,6 +164,13 @@ repos:
 ```
 
 The hook runs `clawguard scan --staged` and needs `ONECLAW_API_KEY` in your environment.
+A commit that would add a vault secret is stopped before it exists:
+
+<p align="center">
+  <img src="docs/images/pre-commit.png" alt="git commit blocked by the clawguard pre-commit hook because src/settings.py contains a Sentry DSN from the vault" width="820">
+</p>
+
+Set `FORCE_COLOR=1` to keep colours in hook and CI output, or `NO_COLOR=1` to turn them off.
 
 ## GitHub Actions
 
@@ -202,6 +201,11 @@ so on that tier, narrow runs with `--prefix` or `--vault` and keep scheduled sca
 - No third-party dependencies, no telemetry. The only network traffic is to the API URL you configure.
 - Tokens from the key exchange are short-lived and kept in memory only.
 - Finding a secret means it's exposed. **Rotate it first**, then clean up the file or history. Deleting the line doesn't un-leak it.
+
+## Screenshots
+
+The images in `docs/images/` show real clawguard output from a demo repository, run against the
+fake 1Claw API used by the tests. The secrets in them are made up.
 
 ## Development
 
